@@ -1,0 +1,189 @@
+name: NocturN Build
+permissions:
+  contents: write
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      os_patch_level:
+        description: 'OS patch level (YYYY-MM)'
+        required: false
+        default: ''
+
+jobs:
+  build-gki:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Initial Disk Space
+        run: |
+          echo "===== Initial Total Disk Space in GB ====="
+          df -BG
+
+      - name: Free up space
+        run: |
+          curl -L -o util_free_space.sh https://raw.githubusercontent.com/apache/arrow/main/ci/scripts/util_free_space.sh
+          chmod +x util_free_space.sh
+          ./util_free_space.sh
+          df -BG
+
+      - name: Set fixed variables (android15 / 6.6)
+        run: |
+          echo "ANDROID_VERSION=android15" >> $GITHUB_ENV
+          echo "KERNEL_VERSION=6.6" >> $GITHUB_ENV
+          echo "CONFIG=android15-6.6" >> $GITHUB_ENV
+
+      - name: Resolve OS_PATCH_LEVEL (auto if blank)
+        run: |
+          OPL="${{ inputs.os_patch_level }}"
+          if [ -z "$OPL" ] || [ "$OPL" = "auto" ]; then
+            OPL="$(date -u +%Y-%m)"
+          fi
+          echo "OS_PATCH_LEVEL=$OPL" >> $GITHUB_ENV
+
+      - name: Setup Build Environment
+        run: |
+          AOSP_MIRROR=https://android.googlesource.com
+          BRANCH=main-kernel-2025
+          git clone $AOSP_MIRROR/kernel/prebuilts/build-tools -b $BRANCH --depth 1 kernel-build-tools &
+          git clone $AOSP_MIRROR/platform/system/tools/mkbootimg -b $BRANCH --depth 1 mkbootimg &
+          wait
+
+          echo "AVBTOOL=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/bin/avbtool" >> $GITHUB_ENV
+          echo "MKBOOTIMG=$GITHUB_WORKSPACE/mkbootimg/mkbootimg.py" >> $GITHUB_ENV
+          echo "BOOT_SIGN_KEY_PATH=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/share/avb/testkey_rsa2048.pem" >> $GITHUB_ENV
+
+          mkdir -p ./git-repo
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ./git-repo/repo
+          chmod a+rx ./git-repo/repo
+          echo "REPO=$GITHUB_WORKSPACE/./git-repo/repo" >> $GITHUB_ENV
+
+      - name: Set boot sign key
+        env:
+          BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
+        run: |
+          if [ -n "$BOOT_SIGN_KEY" ]; then
+            echo "$BOOT_SIGN_KEY" > ./kernel-build-tools/linux-x86/share/avb/testkey_rsa2048.pem
+          fi
+
+      - name: Clone AnyKernel3 (no extra patches)
+        run: |
+          git clone https://github.com/heybyben/AnyKernel3.git -b nocturn
+
+      - name: Initialize and Sync Kernel Source
+        run: |
+          mkdir -p "$CONFIG"
+          cd "$CONFIG"
+          FORMATTED_BRANCH="android15-6.6-$OS_PATCH_LEVEL"
+          $REPO init -u https://android.googlesource.com/kernel/manifest -b common-${FORMATTED_BRANCH} --repo-rev=v2.16 --depth=1
+          $REPO sync -c -j$(nproc) --no-tags --fail-fast
+
+      - name: Extract Kernel SUBLEVEL
+        id: sublevel
+        run: |
+          cd "$CONFIG/common"
+          SUBLEVEL=$(grep -E '^SUBLEVEL[[:space:]]*=' Makefile | awk '{print $3}')
+          echo "SUBLEVEL=$SUBLEVEL" >> $GITHUB_ENV
+          echo "sublevel=$SUBLEVEL" >> $GITHUB_OUTPUT
+
+      - name: Minor include fix for <6.6.50 (idempotent)
+        run: |
+          cd "$CONFIG/common"
+          if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c 2>/dev/null; then
+            sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c || true
+          fi
+
+      - name: Disable check_defconfig
+        run: |
+          cd "$CONFIG"
+          sed -i 's/check_defconfig//' ./common/build.config.gki
+
+      - name: Configure Kernel Features (vanilla-friendly)
+        run: |
+          cd "$CONFIG"
+          DEFCONFIG=common/arch/arm64/configs/gki_defconfig
+          {
+            echo "# Mountify"
+            echo "CONFIG_TMPFS_XATTR=y"
+            echo "CONFIG_TMPFS_POSIX_ACL=y"
+
+            echo "# Networking"
+            echo "CONFIG_IP_NF_TARGET_TTL=y"
+            echo "CONFIG_IP6_NF_TARGET_HL=y"
+            echo "CONFIG_IP6_NF_MATCH_HL=y"
+
+            echo "# TCP BBR"
+            echo "CONFIG_TCP_CONG_ADVANCED=y"
+            echo "CONFIG_TCP_CONG_BBR=y"
+            echo "CONFIG_NET_SCH_FQ=y"
+
+            echo "# IPSet"
+            echo "CONFIG_IP_SET=y"
+            echo "CONFIG_IP_SET_MAX=65534"
+
+            echo "# Sound"
+            echo "CONFIG_SND=y"
+            echo "CONFIG_SND_ALOOP=m"
+
+            echo "# Build Optimization"
+            echo "CONFIG_LTO_CLANG_THIN=y"
+            echo "CONFIG_LTO_CLANG=y"
+          } >> "$DEFCONFIG"
+
+          # Tambah module snd-aloop ke daftar modul GKI bila perlu
+          if [ -f "build/build.sh" ]; then
+            echo "sound/drivers/snd-aloop.ko" >> common/android/gki_aarch64_modules
+          else
+            sed -i '/_COMMON_GKI_MODULES_LIST = \\[/,/\\]/ s/\\]/    "sound\/drivers\/snd-aloop.ko",\n&/' common/modules.bzl
+          fi
+
+      - name: Change Kernel Name (suffix) & clean Bazel exports
+        run: |
+          cd "$CONFIG"
+          sed -i '$s|echo "\$res"|echo "\$res-NocturN"|' ./common/scripts/setlocalversion
+          perl -pi -e 's{UTS_VERSION="\$\(echo \$UTS_VERSION \$CONFIG_FLAGS \$TIMESTAMP \| cut -b -\$UTS_LEN\)"}{UTS_VERSION="#1 SMP PREEMPT Sun Apr 20 04:20:00 UTC 2025"}' ./common/scripts/mkcompile_h
+          sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl
+          rm -rf ./common/android/abi_gki_protected_exports_*
+          perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel
+
+      - name: Build Kernel (Bazel)
+        run: |
+          cd "$CONFIG"
+          tools/bazel build --config=fast --lto=thin //common:kernel_aarch64_dist
+
+      - name: Prepare AnyKernel3 Image
+        run: |
+          IMG="./$CONFIG/bazel-bin/common/kernel_aarch64/Image"
+          test -f "$IMG" || (echo "Error: $IMG not found" && exit 1)
+          cp "$IMG" AnyKernel3/Image
+
+      - name: Set artifact name (NocturN-GKI-6.6-YYYYMMDD-####.zip)
+        run: |
+          DATE=$(date -u +%Y%m%d)
+          RAND=$(shuf -i 1000-9999 -n 1)
+          FILE_NAME="NocturN-GKI-6.6-${DATE}-${RAND}"
+          echo "FILE_NAME=$FILE_NAME" >> $GITHUB_ENV
+
+      - name: Package flashable AnyKernel zip
+        run: |
+          cd AnyKernel3
+          rm -rf .git .github || true
+          zip -r9 ../${{ env.FILE_NAME }}.zip . -x "*.git*" "*.github*"
+
+      - name: Upload artifact (AnyKernel zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}
+          path: ${{ env.FILE_NAME }}.zip
+          compression-level: 9
+
+      - name: Build Summary
+        run: |
+          echo "# Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## ${{ env.FILE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Android Version:** android15" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kernel:** 6.6.${{ steps.sublevel.outputs.sublevel }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **OS Patch (branch):** $OS_PATCH_LEVEL" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Date:** $(date -u +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Artifact:** ${{ env.FILE_NAME }}.zip" >> $GITHUB_STEP_SUMMARY
