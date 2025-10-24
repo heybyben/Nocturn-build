@@ -10,6 +10,10 @@ on:
         description: 'OS patch level (YYYY-MM)'
         required: false
         default: ''
+      release_type:
+        description: 'Release type: Stable (release) or Test (prerelease)'
+        required: true
+        default: 'test'
 
 jobs:
   build-gki:
@@ -158,25 +162,31 @@ jobs:
           test -f "$IMG" || (echo "Error: $IMG not found" && exit 1)
           cp "$IMG" AnyKernel3/Image
 
-      - name: Set artifact name (NocturN-GKI-6.6-YYYYMMDD-####.zip)
+      - name: Set release file + tag names
+        id: names
         run: |
           DATE=$(date -u +%Y%m%d)
           RAND=$(shuf -i 1000-9999 -n 1)
           FILE_NAME="NocturN-GKI-6.6-${DATE}-${RAND}"
+          if [ "${{ inputs.release_type }}" = "release" ]; then
+            TAG="v6.6-${DATE}-${RAND}"
+            TITLE="NocturN GKI 6.6 (${DATE})"
+            MAKE_LATEST="true"
+          else
+            TAG="test-6.6-${DATE}-${RAND}"
+            TITLE="NocturN GKI 6.6 Test (${DATE})"
+            MAKE_LATEST="false"
+          fi
           echo "FILE_NAME=$FILE_NAME" >> $GITHUB_ENV
+          echo "RELEASE_TAG=$TAG" >> $GITHUB_ENV
+          echo "RELEASE_TITLE=$TITLE" >> $GITHUB_ENV
+          echo "MAKE_LATEST=$MAKE_LATEST" >> $GITHUB_ENV
 
       - name: Package flashable AnyKernel zip
         run: |
           cd AnyKernel3
           rm -rf .git .github || true
           zip -r9 ../${{ env.FILE_NAME }}.zip . -x "*.git*" "*.github*"
-
-      - name: Upload artifact (AnyKernel zip)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.FILE_NAME }}
-          path: ${{ env.FILE_NAME }}.zip
-          compression-level: 9
 
       - name: Build Summary
         run: |
@@ -186,4 +196,17 @@ jobs:
           echo "- **Kernel:** 6.6.${{ steps.sublevel.outputs.sublevel }}" >> $GITHUB_STEP_SUMMARY
           echo "- **OS Patch (branch):** $OS_PATCH_LEVEL" >> $GITHUB_STEP_SUMMARY
           echo "- **Build Date:** $(date -u +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
-          echo "- **Artifact:** ${{ env.FILE_NAME }}.zip" >> $GITHUB_STEP_SUMMARY
+          echo "- **Release Tag:** ${{ env.RELEASE_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Asset:** ${{ env.FILE_NAME }}.zip" >> $GITHUB_STEP_SUMMARY
+
+      - name: Publish GitHub Release (upload asset)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TITLE }}
+          prerelease: ${{ inputs.release_type != 'release' }}
+          draft: false
+          generate_release_notes: true
+          make_latest: ${{ env.MAKE_LATEST }}
+          files: |
+            ${{ env.FILE_NAME }}.zip
