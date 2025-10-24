@@ -138,13 +138,9 @@ jobs:
             echo 'CONFIG_LOCALVERSION="-NocturN"'
             echo '# CONFIG_LOCALVERSION_AUTO is not set'
           } >> "$DEFCONFIG"
-
-          # Tambah module snd-aloop ke daftar modul GKI bila perlu
-          if [ -f "build/build.sh" ]; then
-            echo "sound/drivers/snd-aloop.ko" >> common/android/gki_aarch64_modules
-          else
+          
+            cd "$CONFIG"
             sed -i '/_COMMON_GKI_MODULES_LIST = \\[/,/\\]/ s/\\]/    "sound\/drivers\/snd-aloop.ko",\n&/' common/modules.bzl
-          fi
 
       - name: Clean Bazel exports (no localversion hacks)
         run: |
