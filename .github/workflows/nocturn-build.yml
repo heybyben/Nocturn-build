@@ -149,6 +149,11 @@ jobs:
           rm -rf ./common/android/abi_gki_protected_exports_* || true
           perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel || true
 
+      - name: Integrate SukiSU
+        run: |
+          cd "$CONFIG/common"
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+
       - name: Build Kernel (Bazel)
         run: |
           cd "$CONFIG"
