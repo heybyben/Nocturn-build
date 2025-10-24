@@ -139,7 +139,6 @@ jobs:
             echo '# CONFIG_LOCALVERSION_AUTO is not set'
           } >> "$DEFCONFIG"
           
-            cd "$CONFIG"
             sed -i '/_COMMON_GKI_MODULES_LIST = \\[/,/\\]/ s/\\]/    "sound\/drivers\/snd-aloop.ko",\n&/' common/modules.bzl
 
       - name: Clean Bazel exports (no localversion hacks)
