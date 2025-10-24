@@ -133,6 +133,10 @@ jobs:
             echo "# Build Optimization"
             echo "CONFIG_LTO_CLANG_THIN=y"
             echo "CONFIG_LTO_CLANG=y"
+
+            echo "# Branding"
+            echo 'CONFIG_LOCALVERSION="-NocturN"'
+            echo '# CONFIG_LOCALVERSION_AUTO is not set'
           } >> "$DEFCONFIG"
 
           # Tambah module snd-aloop ke daftar modul GKI bila perlu
@@ -142,19 +146,26 @@ jobs:
             sed -i '/_COMMON_GKI_MODULES_LIST = \\[/,/\\]/ s/\\]/    "sound\/drivers\/snd-aloop.ko",\n&/' common/modules.bzl
           fi
 
-      - name: Change Kernel Name (suffix) & clean Bazel exports
+      - name: Clean Bazel exports (no localversion hacks)
         run: |
           cd "$CONFIG"
-          sed -i '$s|echo "\$res"|echo "\$res-NocturN"|' ./common/scripts/setlocalversion
-          perl -pi -e 's{UTS_VERSION="\$\(echo \$UTS_VERSION \$CONFIG_FLAGS \$TIMESTAMP \| cut -b -\$UTS_LEN\)"}{UTS_VERSION="#1 SMP PREEMPT Sun Apr 20 04:20:00 UTC 2025"}' ./common/scripts/mkcompile_h
-          sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl
-          rm -rf ./common/android/abi_gki_protected_exports_*
-          perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel
+          sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl || true
+          rm -rf ./common/android/abi_gki_protected_exports_* || true
+          perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel || true
 
       - name: Build Kernel (Bazel)
         run: |
           cd "$CONFIG"
-          tools/bazel build --config=fast --lto=thin //common:kernel_aarch64_dist
+          export KBUILD_BUILD_USER="NocturN"
+          export KBUILD_BUILD_HOST="CI"
+          export KBUILD_BUILD_TIMESTAMP="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
+          export SOURCE_DATE_EPOCH="$(date -u +%s)"
+          tools/bazel build --config=fast --lto=thin \
+            --action_env=KBUILD_BUILD_USER \
+            --action_env=KBUILD_BUILD_HOST \
+            --action_env=KBUILD_BUILD_TIMESTAMP \
+            --action_env=SOURCE_DATE_EPOCH \
+            //common:kernel_aarch64_dist
 
       - name: Prepare AnyKernel3 Image
         run: |
