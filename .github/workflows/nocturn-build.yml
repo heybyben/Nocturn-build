@@ -138,8 +138,8 @@ jobs:
             echo 'CONFIG_LOCALVERSION="-NocturN"'
             echo '# CONFIG_LOCALVERSION_AUTO is not set'
           } >> "$DEFCONFIG"
-          
-            sed -i '/_COMMON_GKI_MODULES_LIST = \\[/,/\\]/ s/\\]/    "sound\/drivers\/snd-aloop.ko",\n&/' common/modules.bzl
+
+          sed -i '/_COMMON_GKI_MODULES_LIST = \\[/,/\\]/ s/\\]/    "sound\/drivers\/snd-aloop.ko",\n&/' common/modules.bzl
 
       - name: Clean Bazel exports (no localversion hacks)
         run: |
@@ -153,18 +153,18 @@ jobs:
           cd "$CONFIG/common"
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
 
+      - name: Fix Kernel Timestamp (dynamic date)
+        run: |
+          cd "$CONFIG"
+          TIMESTAMP="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
+          perl -pi -e "s{UTS_VERSION=\"\\\$(echo \\\$UTS_VERSION \\\$CONFIG_FLAGS \\\$TIMESTAMP \\\| cut -b -\\\$UTS_LEN)\"}{UTS_VERSION=\"#1 SMP PREEMPT ${TIMESTAMP}\"}" ./common/scripts/mkcompile_h || true
+
       - name: Build Kernel (Bazel)
         run: |
           cd "$CONFIG"
           export KBUILD_BUILD_USER="NocturN"
           export KBUILD_BUILD_HOST="CI"
-          export KBUILD_BUILD_TIMESTAMP="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
-          export SOURCE_DATE_EPOCH="$(date -u +%s)"
           tools/bazel build --config=fast --lto=thin \
-            --action_env=KBUILD_BUILD_USER \
-            --action_env=KBUILD_BUILD_HOST \
-            --action_env=KBUILD_BUILD_TIMESTAMP \
-            --action_env=SOURCE_DATE_EPOCH \
             //common:kernel_aarch64_dist
 
       - name: Prepare AnyKernel3 Image
