@@ -141,12 +141,17 @@ jobs:
 
           sed -i '/_COMMON_GKI_MODULES_LIST = \\[/,/\\]/ s/\\]/    "sound\/drivers\/snd-aloop.ko",\n&/' common/modules.bzl
 
-      - name: Clean Bazel exports (no localversion hacks)
+      - name: Clean Bazel exports
         run: |
           cd "$CONFIG"
           sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl || true
           rm -rf ./common/android/abi_gki_protected_exports_* || true
           perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel || true
+
+      - name: Customize kernel localversion output
+        run: |
+          cd "$CONFIG/common"
+          sed -i 's|echo "${KERNELVERSION}${file_localversion}${config_localversion}${LOCALVERSION}${scm_version}"|echo "${KERNELVERSION}${config_localversion}/$(git rev-parse --short=8 HEAD)"|' ./scripts/setlocalversion
 
       - name: Integrate SukiSU
         run: |
