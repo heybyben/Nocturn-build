@@ -148,6 +148,11 @@ jobs:
           rm -rf ./common/android/abi_gki_protected_exports_* || true
           perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel || true
 
+      - name: Set custom build host
+        run: |
+          cd "$CONFIG"
+          sed -i 's|export KBUILD_BUILD_HOST=.*|export KBUILD_BUILD_HOST=byben|' build/kernel/_setup_env.sh
+
       - name: Customize kernel localversion output
         run: |
           cd "$CONFIG/common"
