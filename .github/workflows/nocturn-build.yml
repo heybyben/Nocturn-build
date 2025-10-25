@@ -194,9 +194,9 @@ jobs:
 
       - name: Fix Kernel Timestamp (dynamic date)
         run: |
-          cd "$CONFIG"
-          TIMESTAMP="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
-          perl -pi -e "s{UTS_VERSION=\"\\\$(echo \\\$UTS_VERSION \\\$CONFIG_FLAGS \\\$TIMESTAMP \\\| cut -b -\\\$UTS_LEN)\"}{UTS_VERSION=\"#1 SMP PREEMPT ${TIMESTAMP}\"}" ./common/scripts/mkcompile_h || true
+          cd "$CONFIG/common/init"
+          TIMESTAMP=$(date -u +"%a %b %d %H:%M:%S UTC %Y")
+          sed -i "s|build-timestamp = .*|build-timestamp = \"${TIMESTAMP}\"|" Makefile
 
       - name: Build Kernel (Bazel)
         run: |
