@@ -156,7 +156,8 @@ jobs:
       - name: Customize kernel localversion output
         run: |
           cd "$CONFIG/common"
-          sed -i 's|echo "${KERNELVERSION}${file_localversion}${config_localversion}${LOCALVERSION}${scm_version}"|echo "${KERNELVERSION}${config_localversion}/$(git rev-parse --short=8 HEAD)"|' ./scripts/setlocalversion
+          GIT_HASH=$(git rev-parse --short=8 HEAD)
+          sed -i 's|echo "${KERNELVERSION}${file_localversion}${config_localversion}${LOCALVERSION}${scm_version}"|echo "${KERNELVERSION}${config_localversion}/${GIT_HASH}"|' ./scripts/setlocalversion
 
       - name: Integrate SukiSU
         run: |
