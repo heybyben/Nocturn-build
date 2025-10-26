@@ -135,7 +135,7 @@ jobs:
             echo "CONFIG_LTO_CLANG=y"
 
             echo "# Branding"
-            echo 'CONFIG_LOCALVERSION="-NocturN"'
+            echo 'CONFIG_LOCALVERSION="-NocturN-v1.0"'
             echo '# CONFIG_LOCALVERSION_AUTO is not set'
           } >> "$DEFCONFIG"
 
