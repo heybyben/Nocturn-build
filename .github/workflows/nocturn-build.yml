@@ -17,7 +17,7 @@ on:
       root_option:
         description: 'Root option: none (Vanilla) / suki (SukiSU+SUSFS) / both'
         required: true
-        default: 'both'   # choices: none | suki | both
+        default: 'both'
       version_label:
         description: 'Version label (e.g., v1.0)'
         required: true
@@ -29,7 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [vanilla, suki]  # vanilla = tanpa root, suki = SukiSU + SUSFS
+        variant: [vanilla, suki]
 
     steps:
       - name: Decide if this variant should run
@@ -46,26 +46,14 @@ jobs:
             SHOULD_RUN=true
           fi
           echo "run=$SHOULD_RUN" >> $GITHUB_OUTPUT
-          echo "Selected root_option=$ROOT_OPT, variant=$VARIANT"
 
-      - name: Set fixed variables (android15 / 6.6)
+      - name: Set fixed variables
         if: steps.filter.outputs.run == 'true'
         run: |
           echo "ANDROID_VERSION=android15" >> $GITHUB_ENV
           echo "KERNEL_VERSION=6.6" >> $GITHUB_ENV
-          echo "BASE_CONFIG=android15-6.6" >> $GITHUB_ENV
           echo "VARIANT=${{ matrix.variant }}" >> $GITHUB_ENV
-          echo "CONFIG=android15-6.6-${{ matrix.variant }}" >> $GITHUB_ENV
           echo "VERSION_LABEL=${{ inputs.version_label }}" >> $GITHUB_ENV
-
-      - name: Resolve OS_PATCH_LEVEL (auto if blank)
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          OPL="${{ inputs.os_patch_level }}"
-          if [ -z "$OPL" ] || [ "$OPL" = "auto" ]; then
-            OPL="$(date -u +%Y-%m)"
-          fi
-          echo "OS_PATCH_LEVEL=$OPL" >> $GITHUB_ENV
 
       - name: Setup Build Environment
         if: steps.filter.outputs.run == 'true'
@@ -75,253 +63,116 @@ jobs:
           git clone $AOSP_MIRROR/kernel/prebuilts/build-tools -b $BRANCH --depth 1 kernel-build-tools &
           git clone $AOSP_MIRROR/platform/system/tools/mkbootimg -b $BRANCH --depth 1 mkbootimg &
           wait
-
-          echo "AVBTOOL=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/bin/avbtool" >> $GITHUB_ENV
-          echo "MKBOOTIMG=$GITHUB_WORKSPACE/mkbootimg/mkbootimg.py" >> $GITHUB_ENV
-          echo "BOOT_SIGN_KEY_PATH=$GITHUB_WORKSPACE/kernel-build-tools/linux-x86/share/avb/testkey_rsa2048.pem" >> $GITHUB_ENV
-
           mkdir -p ./git-repo
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ./git-repo/repo
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ./git-repo/repo
           chmod a+rx ./git-repo/repo
           echo "REPO=$GITHUB_WORKSPACE/./git-repo/repo" >> $GITHUB_ENV
 
-      - name: Set boot sign key
+      - name: Clone AnyKernel3
         if: steps.filter.outputs.run == 'true'
-        env:
-          BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
-        run: |
-          if [ -n "$BOOT_SIGN_KEY" ]; then
-            echo "$BOOT_SIGN_KEY" > ./kernel-build-tools/linux-x86/share/avb/testkey_rsa2048.pem
-          fi
-
-      - name: Clone AnyKernel3 (no extra patches)
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          git clone https://github.com/heybyben/AnyKernel3.git -b nocturn
+        run: git clone https://github.com/heybyben/AnyKernel3.git -b nocturn
 
       - name: Initialize and Sync Kernel Source
         if: steps.filter.outputs.run == 'true'
         run: |
-          mkdir -p "$CONFIG"
-          cd "$CONFIG"
-          FORMATTED_BRANCH="android15-6.6-$OS_PATCH_LEVEL"
-          $REPO init -u https://android.googlesource.com/kernel/manifest -b common-${FORMATTED_BRANCH} --repo-rev=v2.16 --depth=1
+          mkdir -p "$VARIANT"
+          cd "$VARIANT"
+          $REPO init -u https://android.googlesource.com/kernel/manifest -b common-android15-6.6-${{ inputs.os_patch_level || '2025-10' }} --depth=1
           $REPO sync -c -j$(nproc) --no-tags --fail-fast
 
-      - name: Extract Kernel SUBLEVEL
-        if: steps.filter.outputs.run == 'true'
-        id: sublevel
-        run: |
-          cd "$CONFIG/common"
-          SUBLEVEL=$(grep -E '^SUBLEVEL[[:space:]]*=' Makefile | awk '{print $3}')
-          echo "SUBLEVEL=$SUBLEVEL" >> $GITHUB_ENV
-          echo "sublevel=$SUBLEVEL" >> $GITHUB_OUTPUT
-
-      - name: Minor include fix for <6.6.50 (idempotent)
+      - name: Configure Kernel
         if: steps.filter.outputs.run == 'true'
         run: |
-          cd "$CONFIG/common"
-          if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c 2>/dev/null; then
-            sed -i '/#include <trace\/hooks\/blk.h>/a #include <trace\/hooks\/fs.h>' ./fs/namespace.c || true
-          fi
-
-      - name: Disable check_defconfig
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          cd "$CONFIG"
-          sed -i 's/check_defconfig//' ./common/build.config.gki
-
-      - name: Configure Kernel Features (Vanilla / SukiSU)
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          cd "$CONFIG"
+          cd "$VARIANT"
           DEFCONFIG=common/arch/arm64/configs/gki_defconfig
-          {
-            echo "# Mountify"
-            echo "CONFIG_TMPFS_XATTR=y"
-            echo "CONFIG_TMPFS_POSIX_ACL=y"
+          echo "CONFIG_TMPFS_XATTR=y" >> "$DEFCONFIG"
+          echo "CONFIG_TMPFS_POSIX_ACL=y" >> "$DEFCONFIG"
+          if [ "$VARIANT" = "vanilla" ]; then
+            echo "CONFIG_LOCALVERSION=\"-NocturN-${VERSION_LABEL}\"" >> "$DEFCONFIG"
+          else
+            echo "CONFIG_LOCALVERSION=\"-NocturN+SukiSU-${VERSION_LABEL}\"" >> "$DEFCONFIG"
+          fi
+          echo '# CONFIG_LOCALVERSION_AUTO is not set' >> "$DEFCONFIG"
 
-            echo "# Networking"
-            echo "CONFIG_IP_NF_TARGET_TTL=y"
-            echo "CONFIG_IP6_NF_TARGET_HL=y"
-            echo "CONFIG_IP6_NF_MATCH_HL=y"
-
-            echo "# TCP BBR"
-            echo "CONFIG_TCP_CONG_ADVANCED=y"
-            echo "CONFIG_TCP_CONG_BBR=y"
-            echo "CONFIG_NET_SCH_FQ=y"
-
-            echo "# IPSet"
-            echo "CONFIG_IP_SET=y"
-            echo "CONFIG_IP_SET_MAX=65534"
-
-            echo "# Sound"
-            echo "CONFIG_SND=y"
-            echo "CONFIG_SND_ALOOP=m"
-
-            echo "# Build Optimization"
-            echo "CONFIG_LTO_CLANG_THIN=y"
-            echo "CONFIG_LTO_CLANG=y"
-
-            echo "# Branding"
-            if [ "${{ matrix.variant }}" = "vanilla" ]; then
-              echo "CONFIG_LOCALVERSION=\"-NocturN-${VERSION_LABEL}\""
-            else
-              echo "CONFIG_LOCALVERSION=\"-NocturN+SukiSU-${VERSION_LABEL}\""
-            fi
-            echo '# CONFIG_LOCALVERSION_AUTO is not set'
-          } >> "$DEFCONFIG"
-
-          sed -i '/_COMMON_GKI_MODULES_LIST = \\[/,/\\]/ s/\\]/    "sound\/drivers\/snd-aloop.ko",\n&/' common/modules.bzl
-
-      - name: Clean Bazel exports
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          cd "$CONFIG"
-          sed -i "/stable_scmversion_cmd/s/-maybe-dirty//g" ./build/kernel/kleaf/impl/stamp.bzl || true
-          rm -rf ./common/android/abi_gki_protected_exports_* || true
-          perl -pi -e 's/^\s*"protected_exports_list"\s*:\s*"android\/abi_gki_protected_exports_aarch64",\s*$//;' ./common/BUILD.bazel || true
-
-      - name: Set custom build host
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          cd "$CONFIG"
-          sed -i 's|export KBUILD_BUILD_HOST=.*|export KBUILD_BUILD_HOST=byben|' build/kernel/_setup_env.sh
-
-      - name: Customize kernel localversion output
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          cd "$CONFIG/common"
-          sed -i 's|echo "${KERNELVERSION}${file_localversion}${config_localversion}${LOCALVERSION}${scm_version}"|echo "${KERNELVERSION}${config_localversion}"|' ./scripts/setlocalversion
-
-      # === Root integration (only for SukiSU variant) ===
-      - name: Integrate SukiSU
+      - name: Integrate SukiSU (only for suki)
         if: steps.filter.outputs.run == 'true' && matrix.variant == 'suki'
         run: |
-          cd "$CONFIG/common"
+          cd "$VARIANT/common"
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
-
-      - name: Add support SUSFS
-        if: steps.filter.outputs.run == 'true' && matrix.variant == 'suki'
-        run: |
-          cd "$CONFIG/common"
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-main
-          cd ../
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-android15-6.6 --depth=1
-          cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
-          cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
-          cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common
-          cd common
-          patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch
 
-      - name: Configure SUSFS (defconfig toggles)
-        if: steps.filter.outputs.run == 'true' && matrix.variant == 'suki'
-        run: |
-          cd "$CONFIG"
-          DEFCONFIG="common/arch/arm64/configs/gki_defconfig"
-          {
-            echo ""
-            echo "# SUSFS Configuration"
-            echo "CONFIG_KSU_SUSFS=y"
-            echo "# CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT is not set"
-            echo "CONFIG_KSU_SUSFS_SUS_PATH=y"
-            echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y"
-            echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y"
-            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y"
-            echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y"
-            echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y"
-            echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y"
-            echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n"
-            echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y"
-            echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y"
-            echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y"
-            echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y"
-            echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y"
-            echo "CONFIG_KSU_SUSFS_SUS_SU=n"
-          } >> "$DEFCONFIG"
-      # === /Root integration ===
-
-      - name: Fix Kernel Timestamp (dynamic date)
+      - name: Build Kernel
         if: steps.filter.outputs.run == 'true'
         run: |
-          cd "$CONFIG/common/init"
-          TIMESTAMP=$(date -u +"%a %b %d %H:%M:%S UTC %Y")
-          sed -i "s|build-timestamp = .*|build-timestamp = \"${TIMESTAMP}\"|" Makefile
-
-      - name: Build Kernel (Bazel)
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          cd "$CONFIG"
+          cd "$VARIANT"
           export KBUILD_BUILD_USER="NocturN"
           export KBUILD_BUILD_HOST="CI"
-          tools/bazel build --config=fast --lto=thin \
-            //common:kernel_aarch64_dist
+          tools/bazel build --config=fast --lto=thin //common:kernel_aarch64_dist
 
       - name: Prepare AnyKernel3 Image
         if: steps.filter.outputs.run == 'true'
         run: |
-          IMG="./$CONFIG/bazel-bin/common/kernel_aarch64/Image"
-          test -f "$IMG" || (echo "Error: $IMG not found" && exit 1)
+          IMG="./$VARIANT/bazel-bin/common/kernel_aarch64/Image"
           cp "$IMG" AnyKernel3/Image
-
-      - name: Set release file + tag names
-        if: steps.filter.outputs.run == 'true'
-        id: names
-        run: |
-          DATE=$(date -u +%Y%m%d)
-          RAND=$(shuf -i 1000-9999 -n 1)
-          VAR="${{ matrix.variant }}"
-          if [ "$VAR" = "vanilla" ]; then VAR_TAG="Vanilla"; else VAR_TAG="SukiSU"; fi
-
-          # Sanitize version label for filenames/tags (avoid spaces)
-          SAN_VER=$(echo "$VERSION_LABEL" | tr ' ' '_')
-
-          FILE_NAME="NocturN-GKI-6.6-${DATE}-${RAND}-${VAR_TAG}-${SAN_VER}"
-          if [ "${{ inputs.release_type }}" = "release" ]; then
-            TAG="v6.6-${DATE}-${RAND}-${VAR_TAG}-${SAN_VER}"
-            TITLE="NocturN GKI 6.6 (${DATE}) — ${VAR_TAG} ${VERSION_LABEL}"
-            MAKE_LATEST="true"
+          cd AnyKernel3
+          if [ "$VARIANT" = "vanilla" ]; then
+            sed -i "s/^kernelstring=.*/kernelstring=\"NocturN Kernel ${VERSION_LABEL}\"/" anykernel.sh
           else
-            TAG="test-6.6-${DATE}-${RAND}-${VAR_TAG}-${SAN_VER}"
-            TITLE="NocturN GKI 6.6 Test (${DATE}) — ${VAR_TAG} ${VERSION_LABEL}"
-            MAKE_LATEST="false"
+            sed -i "s/^kernelstring=.*/kernelstring=\"NocturN Kernel +SukiSU ${VERSION_LABEL}\"/" anykernel.sh
           fi
-          echo "VAR_TAG=$VAR_TAG" >> $GITHUB_ENV
-          echo "FILE_NAME=$FILE_NAME" >> $GITHUB_ENV
-          echo "RELEASE_TAG=$TAG" >> $GITHUB_ENV
-          echo "RELEASE_TITLE=$TITLE" >> $GITHUB_ENV
-          echo "MAKE_LATEST=$MAKE_LATEST" >> $GITHUB_ENV
+          cd ..
 
       - name: Package flashable AnyKernel zip
         if: steps.filter.outputs.run == 'true'
         run: |
+          DATE=$(date -u +%Y%m%d)
+          if [ "$VARIANT" = "vanilla" ]; then VAR_TAG="Vanilla"; else VAR_TAG="SukiSU"; fi
+          FILE_NAME="NocturN-GKI-6.6-${DATE}-${VAR_TAG}-${VERSION_LABEL}.zip"
           cd AnyKernel3
-          rm -rf .git .github || true
-          zip -r9 ../${{ env.FILE_NAME }}.zip . -x "*.git*" "*.github*"
+          zip -r9 "../${FILE_NAME}" . -x "*.git*" "*.github*"
+          cd ..
+          mkdir -p artifacts
+          mv "${FILE_NAME}" artifacts/
 
-      - name: Build Summary
+      - name: Upload Build Artifact
         if: steps.filter.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.variant }}
+          path: artifacts/*.zip
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: build-gki
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./all_zips
+
+      - name: Create unified release
         run: |
-          echo "# Kernel Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "## ${{ env.FILE_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Variant:** ${{ env.VAR_TAG }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version Label:** ${VERSION_LABEL}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Android Version:** android15" >> $GITHUB_STEP_SUMMARY
-          echo "- **Kernel:** 6.6.${{ steps.sublevel.outputs.sublevel }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **OS Patch (branch):** $OS_PATCH_LEVEL" >> $GITHUB_STEP_SUMMARY
-          echo "- **Build Date:** $(date -u +'%Y-%m-%d %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
-          echo "- **Release Tag:** ${{ env.RELEASE_TAG }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Asset:** ${{ env.FILE_NAME }}.zip" >> $GITHUB_STEP_SUMMARY
+          DATE=$(date -u +%Y%m%d)
+          VERSION="${{ inputs.version_label }}"
+          if [ "${{ inputs.release_type }}" = "release" ]; then
+            TAG="v6.6-${DATE}-${VERSION}"
+            TITLE="NocturN GKI 6.6 (${DATE})"
+            PRERELEASE=false
+          else
+            TAG="test-6.6-${DATE}-${VERSION}"
+            TITLE="NocturN GKI 6.6 Test (${DATE})"
+            PRERELEASE=true
+          fi
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          echo "TITLE=$TITLE" >> $GITHUB_ENV
+          echo "PRERELEASE=$PRERELEASE" >> $GITHUB_ENV
 
-      - name: Publish GitHub Release (upload asset)
-        if: steps.filter.outputs.run == 'true'
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ env.RELEASE_TITLE }}
-          prerelease: ${{ inputs.release_type != 'release' }}
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TITLE }}
+          prerelease: ${{ env.PRERELEASE }}
           draft: false
           generate_release_notes: true
-          make_latest: ${{ env.MAKE_LATEST }}
-          files: |
-            ${{ env.FILE_NAME }}.zip
+          files: ./all_zips/**/*.zip
