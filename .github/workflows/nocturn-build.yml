@@ -48,20 +48,6 @@ jobs:
           echo "run=$SHOULD_RUN" >> $GITHUB_OUTPUT
           echo "Selected root_option=$ROOT_OPT, variant=$VARIANT"
 
-      - name: Check Initial Disk Space
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          echo "===== Initial Total Disk Space in GB ====="
-          df -BG
-
-      - name: Free up space
-        if: steps.filter.outputs.run == 'true'
-        run: |
-          curl -L -o util_free_space.sh https://raw.githubusercontent.com/apache/arrow/main/ci/scripts/util_free_space.sh
-          chmod +x util_free_space.sh
-          ./util_free_space.sh
-          df -BG
-
       - name: Set fixed variables (android15 / 6.6)
         if: steps.filter.outputs.run == 'true'
         run: |
